@@ -1,0 +1,25 @@
+[package]
+name = "idattr-onchain"
+version = "0.1.0"
+edition = "2021"
+description = "Anchor an identity-registry root on-chain: build + sign a standard BSV (BIP143/FORKID) transaction committing the anchor root, for broadcast to a Teranode regtest node."
+license = "MIT"
+publish = false
+
+# Own workspace (independent of the self-contained identity-attribution workspace) so it may
+# path-depend on the overlay-broadcast bsv/ckd crates without coupling the container build.
+[workspace]
+
+[dependencies]
+bsv = { path = "../../overlay-broadcast/crates/bsv" }
+ckd = { path = "../../overlay-broadcast/crates/ckd" }
+k256 = { version = "0.13", features = ["ecdsa"] }
+bs58 = { version = "0.5", features = ["check"] }
+rand = "0.8"
+sha2 = "0.10"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+anyhow = "1"
+
+[profile.release]
+opt-level = 2
