@@ -5,17 +5,37 @@
 //!                   producing a fully-signed standard BSV transaction (BIP143/FORKID) as raw hex
 //!                   for `sendrawtransaction`.
 //!
-//! The registry anchor root is committed via a data output. NOTE: a strict SCARCITY deployment
-//! (REQ-CHAIN-0003) would commit it through the TEA-BSV note-anchoring template rather than a data
-//! carrier; the broadcast mechanics (funding, signing, sendrawtransaction) are identical.
+//! The registry anchor root is committed through the SCARCITY / TEA-BSV note-anchoring template,
+//! NOT an OP_RETURN data carrier: the root rides as pushdata inside a SPENDABLE locking script
+//! (`<root> OP_DROP <P2PKH>`), so the commitment output is itself a standard P2PKH possession
+//! outpoint. This satisfies REQ-CHAIN-0003 (the state root is committed by the possession
+//! transaction, binding spend + commit in one tx), REQ-CHAIN-0001/0002 (standard P2PKH spend tail),
+//! and the absolute OP_RETURN prohibition (REQ-CHAIN-0051 / REQ-BUILD-0010). The carrier mirrors
+//! `bsvscript::BuildEnvelopeDrop` / `SPV/03-identity/anchor` (SYS-ENC-001/002, ID-CON-001).
 
 #![forbid(unsafe_code)]
 
 use anyhow::{anyhow, Context, Result};
 use bsv::{
-    build_data_carrier, bytes_to_hex, hash160, p2pkh, push_data, sighash, OutPoint, Transaction,
-    TxIn, TxOut, Txid, SIGHASH_ALL, SIGHASH_FORKID,
+    bytes_to_hex, hash160, p2pkh, push_data, sighash, OutPoint, Transaction, TxIn, TxOut, Txid,
+    SIGHASH_ALL, SIGHASH_FORKID,
 };
+
+/// `OP_DROP` (0x75): pops and discards the top stack item, leaving the trailing P2PKH to authorise
+/// the spend. Not exported by the shared `bsv::script::op` subset, so it is named here.
+const OP_DROP: u8 = 0x75;
+
+/// Build the note-anchoring locking script: `<root> OP_DROP OP_DUP OP_HASH160 <pkh> OP_EQUALVERIFY
+/// OP_CHECKSIG`. The 32-byte root is pushed then dropped (carried, not executed); the trailing
+/// native P2PKH keeps the output a genuinely spendable possession outpoint — never OP_RETURN,
+/// never P2SH. Mirrors `bsvscript::BuildEnvelopeDrop` (carrier b).
+fn build_anchor_locking_script(root: &[u8], h160: &[u8; 20]) -> Vec<u8> {
+    let mut s = Vec::new();
+    push_data(&mut s, root);
+    s.push(OP_DROP);
+    s.extend_from_slice(&p2pkh(h160));
+    s
+}
 use clap::{Parser, Subcommand};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::SecretKey;
@@ -120,16 +140,17 @@ fn build_anchor(
         sequence: 0xffff_ffff,
     };
 
-    // Output 0: commit the anchor root. Output 1: P2PKH change back to us.
-    let data_out = build_data_carrier(&anchor_root);
-    let change = TxOut {
+    // Single output: the possession outpoint. It carries the anchor root via the note-anchoring
+    // template (`<root> OP_DROP <P2PKH>`) AND remains a spendable P2PKH UTXO holding the value, so
+    // spending the funded input and committing the root are bound in one transaction (REQ-CHAIN-0003).
+    let anchor_out = TxOut {
         value: value - fee,
-        locking_script: p2pkh(&h160),
+        locking_script: build_anchor_locking_script(&anchor_root, &h160),
     };
     let mut tx = Transaction {
         version: 1,
         inputs: vec![input],
-        outputs: vec![data_out, change],
+        outputs: vec![anchor_out],
         locktime: 0,
     };
 
